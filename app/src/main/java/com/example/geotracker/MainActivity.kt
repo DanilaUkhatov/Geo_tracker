@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var objectListContainer: LinearLayout
     private lateinit var registrationStatusText: TextView
     private lateinit var syncStatusText: TextView
+    private var lastRegisteredObjectsSignature: String? = null
     private val visitStatusChangedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.d(TAG, "Visit status changed broadcast received")
@@ -56,18 +57,19 @@ class MainActivity : Activity() {
         VisitRepository.initialize(this)
         geofenceManager = GeofenceManager(this)
 
-        if (AuthRepository.isLoggedIn()) {
+        if (AuthRepository.isDeviceAuthorized()) {
             showMainScreen()
         } else {
-            showLoginScreen()
+            showDeviceNotAuthorizedScreen()
         }
     }
 
     override fun onResume() {
         super.onResume()
         VisitRepository.initialize(this)
-        if (AuthRepository.isLoggedIn()) {
+        if (AuthRepository.isDeviceAuthorized()) {
             renderObjects()
+            ensureGeofencesRegistered(requestPermissionsIfMissing = false)
             autoSyncEvents()
         }
     }
@@ -99,6 +101,7 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_FINE_LOCATION) {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
                 requestBackgroundLocationIfNeeded()
+                ensureGeofencesRegistered(requestPermissionsIfMissing = false)
             } else {
                 showToast("ACCESS_FINE_LOCATION не выдан")
             }
@@ -107,6 +110,7 @@ class MainActivity : Activity() {
         if (requestCode == REQUEST_BACKGROUND_LOCATION) {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
                 showToast("ACCESS_BACKGROUND_LOCATION выдан")
+                ensureGeofencesRegistered(requestPermissionsIfMissing = false)
             } else {
                 showToast("ACCESS_BACKGROUND_LOCATION не выдан")
             }
@@ -141,11 +145,6 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(12))
         }
 
-        val registerButton = Button(this).apply {
-            text = "Зарегистрировать геозоны"
-            setOnClickListener { registerGeofences() }
-        }
-
         val syncButton = Button(this).apply {
             text = "Синхронизировать события"
             setOnClickListener { syncEvents() }
@@ -161,14 +160,6 @@ class MainActivity : Activity() {
             setOnClickListener { showAddObjectDialog() }
         }
 
-        val logoutButton = Button(this).apply {
-            text = "Выйти"
-            setOnClickListener {
-                AuthRepository.logout()
-                showLoginScreen()
-            }
-        }
-
         objectListContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, 0)
@@ -177,29 +168,28 @@ class MainActivity : Activity() {
         rootContainer.addView(titleText)
         rootContainer.addView(registrationStatusText)
         rootContainer.addView(syncStatusText)
-        rootContainer.addView(registerButton)
         rootContainer.addView(syncButton)
         rootContainer.addView(syncSettingsButton)
         rootContainer.addView(addObjectButton)
-        rootContainer.addView(logoutButton)
         rootContainer.addView(objectListContainer)
         rootScrollView.addView(rootContainer)
 
         return rootScrollView
     }
 
-    private fun showLoginScreen() {
-        setContentView(createLoginContentView())
+    private fun showDeviceNotAuthorizedScreen() {
+        setContentView(createDeviceNotAuthorizedContentView())
     }
 
     private fun showMainScreen() {
         setContentView(createContentView())
         requestRequiredPermissions()
         renderObjects()
+        ensureGeofencesRegistered(requestPermissionsIfMissing = false)
         autoSyncEvents()
     }
 
-    private fun createLoginContentView(): View {
+    private fun createDeviceNotAuthorizedContentView(): View {
         val rootScrollView = ScrollView(this)
         val rootContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -207,42 +197,41 @@ class MainActivity : Activity() {
         }
 
         val titleText = TextView(this).apply {
-            text = "Вход"
+            text = "Устройство не авторизовано"
             textSize = 24f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(Color.rgb(28, 28, 28))
         }
 
-        val usernameInput = EditText(this).apply {
-            hint = "Логин"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL
-            setSingleLine(true)
+        val androidIdText = TextView(this).apply {
+            text = "ANDROID_ID: ${AuthRepository.getAndroidId()}"
+            textSize = 14f
+            setTextColor(Color.rgb(55, 55, 55))
+            setPadding(0, dp(12), 0, dp(4))
         }
 
-        val passwordInput = EditText(this).apply {
-            hint = "Пароль"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setSingleLine(true)
+        val androidIdHashText = TextView(this).apply {
+            text = "ANDROID_ID hash: ${AuthRepository.getAndroidIdHash()}"
+            textSize = 14f
+            setTextColor(Color.rgb(55, 55, 55))
+            setPadding(0, dp(4), 0, dp(12))
         }
 
-        val loginButton = Button(this).apply {
-            text = "Войти"
+        val retryButton = Button(this).apply {
+            text = "Проверить снова"
             setOnClickListener {
-                val username = usernameInput.text.toString().trim()
-                val password = passwordInput.text.toString()
-
-                if (AuthRepository.login(username, password)) {
+                if (AuthRepository.isDeviceAuthorized()) {
                     showMainScreen()
                 } else {
-                    showToast("Неверный логин или пароль")
+                    showToast("Устройство не входит в корпоративный allowlist")
                 }
             }
         }
 
         rootContainer.addView(titleText)
-        rootContainer.addView(usernameInput)
-        rootContainer.addView(passwordInput)
-        rootContainer.addView(loginButton)
+        rootContainer.addView(androidIdText)
+        rootContainer.addView(androidIdHashText)
+        rootContainer.addView(retryButton)
         rootScrollView.addView(rootContainer)
 
         return rootScrollView
@@ -415,8 +404,8 @@ class MainActivity : Activity() {
             radiusMeters = radiusValue,
             dwellMinutes = dwellValue
         )
-        registrationStatusText.text = "Список мест изменен. Перерегистрируйте геозоны."
         renderObjects()
+        ensureGeofencesRegistered(requestPermissionsIfMissing = true)
         showToast("Место добавлено: objectId=${visitObject.objectId}")
     }
 
@@ -426,8 +415,8 @@ class MainActivity : Activity() {
             .setMessage("objectId=${visitObject.objectId}\n${visitObject.address}")
             .setPositiveButton("Удалить") { _, _ ->
                 if (VisitRepository.removeObject(visitObject.objectId)) {
-                    registrationStatusText.text = "Список мест изменен. Перерегистрируйте геозоны."
                     renderObjects()
+                    ensureGeofencesRegistered(requestPermissionsIfMissing = true)
                     showToast("Место удалено")
                 }
             }
@@ -512,25 +501,42 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun registerGeofences() {
+    private fun ensureGeofencesRegistered(requestPermissionsIfMissing: Boolean) {
         if (!geofenceManager.hasRequiredPermissions()) {
-            registrationStatusText.text = "Нужно выдать разрешения геолокации"
-            requestRequiredPermissions()
+            registrationStatusText.text = "Геозоны зарегистрируются автоматически после выдачи разрешений"
+            if (requestPermissionsIfMissing) {
+                requestRequiredPermissions()
+            }
             return
         }
 
         val objects = VisitRepository.getObjects()
+        val currentSignature = buildObjectsSignature(objects)
+        if (currentSignature == lastRegisteredObjectsSignature) {
+            return
+        }
+
+        registrationStatusText.text = "Автоматическая регистрация геозон..."
         geofenceManager.registerGeofences(
             visitObjects = objects,
             onSuccess = {
-                registrationStatusText.text = "Геозоны зарегистрированы: ${objects.size}"
-                showToast("Геозоны зарегистрированы")
+                lastRegisteredObjectsSignature = currentSignature
+                registrationStatusText.text = "Геозоны зарегистрированы автоматически: ${objects.size}"
             },
             onError = { exception ->
-                registrationStatusText.text = "Ошибка регистрации: ${exception.message}"
-                showToast("Ошибка регистрации геозон")
+                registrationStatusText.text = "Ошибка автоматической регистрации: ${exception.message}"
             }
         )
+    }
+
+    private fun buildObjectsSignature(objects: List<VisitObject>): String {
+        return objects.joinToString(separator = "|") { visitObject ->
+            "${visitObject.objectId}," +
+                "${visitObject.latitude}," +
+                "${visitObject.longitude}," +
+                "${visitObject.radiusMeters}," +
+                visitObject.dwellMinutes
+        }
     }
 
     private fun requestRequiredPermissions() {

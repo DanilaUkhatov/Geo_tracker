@@ -61,6 +61,17 @@ class GeofenceManager(private val context: Context) {
 
         logCurrentLocation()
 
+        if (visitObjects.isEmpty()) {
+            removeGeofences(
+                onSuccess = {
+                    Log.d(TAG, "Geofences cleared: object list is empty")
+                    onSuccess()
+                },
+                onError = onError
+            )
+            return
+        }
+
         val geofences = visitObjects.map { visitObject ->
             Geofence.Builder()
                 .setRequestId(visitObject.objectId.toString())
@@ -166,7 +177,22 @@ class GeofenceManager(private val context: Context) {
         } catch (exception: SecurityException) {
             Log.d(TAG, "Geofence registration failed: permissions revoked", exception)
             onError(exception)
-        }
+            }
+    }
+
+    fun removeGeofences(
+        onSuccess: () -> Unit,
+        onError: (Exception) -> Unit
+    ) {
+        geofencingClient.removeGeofences(geofencePendingIntent)
+            .addOnSuccessListener {
+                Log.d(TAG, "Geofences removed")
+                onSuccess()
+            }
+            .addOnFailureListener { exception ->
+                Log.d(TAG, "Geofence removal failed: ${exception.message}", exception)
+                onError(exception)
+            }
     }
 
     companion object {
